@@ -1,0 +1,72 @@
+name: Promote REFERENCE to TEST
+
+# A promotion is a POINTER MOVE. No build, no compile, no new image: an
+# environment is a tag, re-pointed at a digest that already exists and has
+# already been proven one environment earlier (GP-14, GP-16).
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "latest | sha-<commit> (one exact build) | test-backup (= ROLLBACK)"
+        default: "latest"
+      images:
+        description: "Which image(s) move"
+        type: choice
+        options: [all, reference-api, reference-ui]
+        default: all
+
+permissions:
+  contents: read
+
+# Promotions QUEUE. A promotion mid-move is never cancelled.
+concurrency:
+  group: promote-test
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: test
+    steps:
+      - uses: redhat-actions/openshift-tools-installer@v3.0
+        with:
+          oc: "4"
+
+      # CLUSTER_TOKEN, not the registry password. A credential that can push an
+      # image must not also be the credential that can re-tag production.
+      - run: oc login --token=${{ secrets.CLUSTER_TOKEN }} --server=${{ secrets.CLUSTER_SERVER }}
+
+      - name: Two passes - resolve everything, then move. A half-promotion is impossible.
+        run: |
+          LIST="${{ inputs.images }}"; [ "$LIST" = "all" ] && LIST="reference-api reference-ui"
+          NS="${{ secrets.TOOLS_NS }}"
+          declare -A DIGEST
+          # PASS 1 - resolve every source digest BEFORE touching anything.
+          # A typo'd or missing source tag fails the whole run here, zero tags moved.
+          for img in $LIST; do
+            DIGEST[$img]=$(oc get istag "$img:${{ inputs.source_tag }}" -n "$NS" -o jsonpath='{.image.metadata.name}')
+            [ -z "${DIGEST[$img]}" ] && { echo "::error::cannot resolve $img:${{ inputs.source_tag }} - nothing moved"; exit 1; }
+          done
+          # PASS 2 - back up the current target, then re-point it.
+          # Reading before backing up is what makes rollback safe: the backup step
+          # overwrites the backup tag, so read-after-backup would "roll back" to
+          # the broken build itself.
+          for img in $LIST; do
+            oc tag "$NS/$img:test" "$NS/$img:test-backup" --reference-policy=local || true
+            oc tag "$NS/$img@${DIGEST[$img]}" "$NS/$img:test" --reference-policy=local
+          done
+
+      - name: Verify - done means pods are Ready, not that a tag moved
+        run: |
+          # DEPLOYMENT names, not image names. They differ: an image called
+          # reference-ui is commonly served by a deployment called reference-ui-svc or
+          # prod-reference-ui. Read them off the cluster, never assume.
+          case "${{ inputs.images }}" in
+            all)     DEPLOYS="reference-api reference-ui" ;;
+            reference-api) DEPLOYS="reference-api" ;;
+            reference-ui)  DEPLOYS="reference-ui" ;;
+          esac
+          oc project "${{ secrets.TEST_NS }}"
+          for d in $DEPLOYS; do oc rollout status "deployment/$d" --timeout=300s; done

@@ -1,0 +1,69 @@
+name: CI REFERENCE
+
+# The PR gate. One per repo. The job is named `gate` because that is the exact
+# string branch protection requires green (GP-04).
+#
+# Do NOT add a `paths:` filter to this file. A required check that is filtered
+# out never reports, so any PR touching only unfiltered files waits forever on a
+# check that will never arrive. `paths:` belongs on the CD workflows.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Twice-monthly re-scan: new CVEs appear without new commits.
+    # Scheduled runs always execute on the default branch.
+    - cron: "0 3 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: csharp,javascript-typescript
+          queries: security-extended
+
+      # --- .NET: compile and enforce formatting in one step ---
+      # CSharpier_Check is verify-only. On a developer machine the same package
+      # auto-formats; in CI it must only judge, never rewrite.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet build src/api/Reference.Api.csproj -c Release -p:CSharpier_Check=true
+
+      # --- .NET tests (GP-19) ---
+      # If this repo genuinely has no test project, delete this step AND file a
+      # dated GP-19 exemption in .github/golden-exempt.yml. Never leave it
+      # silently absent.
+      - run: dotnet test src/api.tests/Reference.Api.Tests.csproj -c Release
+
+      # --- Angular: install, build, lint, test ---
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+      - working-directory: src/ui
+        run: |
+          npm ci
+          npm run build
+          npm run lint --if-present
+          npm run test --if-present -- --no-watch --no-progress --browsers=ChromeHeadless
+
+      - uses: github/codeql-action/analyze@v4

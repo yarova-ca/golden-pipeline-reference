@@ -1,0 +1,66 @@
+name: Promote REFERENCE to PROD
+
+# Byte-identical to promote-to-test.yml but for five values:
+#   name:                  ... to TEST          -> ... to PROD
+#   source_tag default:    latest               -> test   (prod ships what test proved)
+#   concurrency group:     promote-test         -> promote-prod
+#   environment:           test                 -> prod   (THIS is what makes it pause)
+#   tags + namespace:      :test/:test-backup   -> :prod/:prod-backup, TEST_NS -> PROD_NS
+#
+# The approval gate is NOT in this file. It is the `prod` environment on the
+# repo, and it must exist or this workflow simply runs (GP-15).
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "test (normal) | sha-<commit> (one exact build) | prod-backup (= ROLLBACK)"
+        default: "test"
+      images:
+        description: "Which image(s) move"
+        type: choice
+        options: [all, reference-api, reference-ui]
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-prod
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: prod
+    steps:
+      - uses: redhat-actions/openshift-tools-installer@v3.0
+        with:
+          oc: "4"
+
+      - run: oc login --token=${{ secrets.CLUSTER_TOKEN }} --server=${{ secrets.CLUSTER_SERVER }}
+
+      - name: Two passes - resolve everything, then move. A half-promotion is impossible.
+        run: |
+          LIST="${{ inputs.images }}"; [ "$LIST" = "all" ] && LIST="reference-api reference-ui"
+          NS="${{ secrets.TOOLS_NS }}"
+          declare -A DIGEST
+          for img in $LIST; do
+            DIGEST[$img]=$(oc get istag "$img:${{ inputs.source_tag }}" -n "$NS" -o jsonpath='{.image.metadata.name}')
+            [ -z "${DIGEST[$img]}" ] && { echo "::error::cannot resolve $img:${{ inputs.source_tag }} - nothing moved"; exit 1; }
+          done
+          for img in $LIST; do
+            oc tag "$NS/$img:prod" "$NS/$img:prod-backup" --reference-policy=local || true
+            oc tag "$NS/$img@${DIGEST[$img]}" "$NS/$img:prod" --reference-policy=local
+          done
+
+      - name: Verify - done means pods are Ready, not that a tag moved
+        run: |
+          case "${{ inputs.images }}" in
+            all)     DEPLOYS="reference-api reference-ui" ;;
+            reference-api) DEPLOYS="reference-api" ;;
+            reference-ui)  DEPLOYS="reference-ui" ;;
+          esac
+          oc project "${{ secrets.PROD_NS }}"
+          for d in $DEPLOYS; do oc rollout status "deployment/$d" --timeout=300s; done

@@ -1,0 +1,22 @@
+# One file at the repo root guards EVERY image, because the build context is
+# always the repo root.
+
+# history & secrets - never in an image
+.git
+**/.env*
+
+# pipeline & IDE files
+.github
+.vs
+.vscode
+.idea
+
+# local build junk - the image builds fresh
+**/bin
+**/obj
+**/node_modules
+**/dist
+**/.angular
+
+# docs
+**/*.md
