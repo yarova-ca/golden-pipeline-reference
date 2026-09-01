@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 15
     environment: test
     steps:
-      - uses: redhat-actions/openshift-tools-installer@v3.0
+      - uses: redhat-actions/openshift-tools-installer@v3.1
         with:
           oc: "4"
 
