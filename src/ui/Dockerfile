@@ -5,7 +5,7 @@
 # Digests below were resolved 2026-08-12.
 
 # --- Angular build (Node v22.23.2, npm 10.9.8) ---
-FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS ng-builder
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS ng-builder
 WORKDIR /src
 # Dependency lists first, so the npm ci layer stays cached until THEY change.
 COPY src/ui/package*.json ./
@@ -14,7 +14,7 @@ COPY src/ui/ ./
 RUN npm run build -- --configuration production
 
 # --- runtime (Caddy 2) ---
-FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 AS final
+FROM caddy:2-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b AS final
 # libcap is unpinned deliberately: pinning an Alpine utility version breaks the
 # build on every Alpine patch, and the base image itself is already digest-pinned.
 # hadolint ignore=DL3018
